@@ -250,6 +250,8 @@ See [`.env.example`](.env.example) — the authoritative list. Highlights:
 make eval-blind    # blind benchmark: CV-only vs CV+VLM + failure analysis
 make eval-rag      # retrieval baselines A–E (+graph arm)
 make eval-vlm      # VLM arm (labels not-run without an endpoint)
+# GPU measurement of the VLM arm (Colab/CUDA, not run in CI/sandbox):
+#   notebooks/ariadne_vlm_evaluation.ipynb  →  scripts/import_external_vlm_results.py
 make test          # pytest (api) + vitest (web) + vitest (mcp)
 cd apps/api && python -m pytest -q          # 33 tests
 cd apps/web && npx vitest run               # component tests

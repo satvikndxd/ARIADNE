@@ -59,6 +59,13 @@ travel with the verdict (`change.metadata.signals`) and appear in the UI
 "Signals" block and Vision Analysis panel.
 
 ## Evaluation
+`notebooks/ariadne_vlm_evaluation.ipynb` is the standalone Colab/CUDA runner for
+the VLM arm: it loads Qwen2.5-VL-7B-Instruct on a GPU, runs CV-only vs CV+VLM
+on the blind benchmark with the repository's own matching/consensus code, and
+exports `vlm_external_colab.json` for import via
+`scripts/import_external_vlm_results.py` (new evaluation run; production records
+untouched; dry-run bundles refused).
+
 `make eval-vlm` runs the blind benchmark with the VLM arm and reports change
 type accuracy, old/new value accuracy, component attribution, impact-category
 accuracy and consensus distribution. Without an endpoint it persists an

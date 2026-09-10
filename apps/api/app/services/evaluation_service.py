@@ -28,6 +28,7 @@ from app.services.agent.agent import AgentRunner
 from app.services.analysis import orchestrator
 from app.services.analysis.revision_analyzer import _cv_for_drawing, _dedupe, _diff_items
 from app.services.rag import retriever
+from ariadne_evaluation import matching as matching_mod
 from ariadne_evaluation import metrics as M
 
 log = get_logger(__name__)
@@ -260,41 +261,6 @@ def _persist_run(name: str, suite: str, report: dict,
     return report
 
 
-def _iou(a: dict, b: list) -> float:
-    x1, y1 = max(a["x"], b[0]), max(a["y"], b[1])
-    x2, y2 = min(a["x"] + a["width"], b[0] + b[2]), min(a["y"] + a["height"], b[1] + b[3])
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    union = a["width"] * a["height"] + b[2] * b[3] - inter
-    return inter / union if union > 0 else 0.0
-
-
-def _reverse_containment(det: dict, gt_bbox: list) -> float:
-    """Fraction of the detected region lying inside the ground-truth box
-    (character-level text edits produce tiny diffs inside a larger label)."""
-    x1, y1 = max(det["x"], gt_bbox[0]), max(det["y"], gt_bbox[1])
-    x2, y2 = min(det["x"] + det["width"], gt_bbox[0] + gt_bbox[2]), \
-        min(det["y"] + det["height"], gt_bbox[1] + gt_bbox[3])
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    det_area = det["width"] * det["height"]
-    return inter / det_area if det_area > 0 else 0.0
-
-
-def _containment(det: dict, gt_bbox: list) -> float:
-    """Fraction of the ground-truth annotation box inside the detected region.
-
-    Region-level detectors localize *clusters* of changed pixels (a moved note,
-    a resized flange ring, a merged title block), while ground truth boxes are
-    per-annotation.  Containment ≥ 0.5 is therefore the matching criterion:
-    "the detector's changed region covers the true changed annotation".
-    """
-    x1, y1 = max(det["x"], gt_bbox[0]), max(det["y"], gt_bbox[1])
-    x2, y2 = min(det["x"] + det["width"], gt_bbox[0] + gt_bbox[2]), \
-        min(det["y"] + det["height"], gt_bbox[1] + gt_bbox[3])
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    gt_area = gt_bbox[2] * gt_bbox[3]
-    return inter / gt_area if gt_area > 0 else 0.0
-
-
 # --------------------------------------------------------------------------- #
 # BLIND REVISION BENCHMARK
 # --------------------------------------------------------------------------- #
@@ -327,33 +293,18 @@ def run_blind_evaluation(name: str = "blind") -> dict:
         entries = gt["changes"]
         eng = {e["semantic"] for e in entries if e["change_type"] != "METADATA_CHANGE"}
 
-        matched: list[tuple[dict, dict]] = []
-        used_by: dict[int, int] = {}
-        for entry in sorted(entries, key=lambda e: -(e["bbox_b"][2] * e["bbox_b"][3])):
-            best_i, best_score = -1, 0.0
-            for i, det in enumerate(result.detections):
-                fwd = _containment(det.bbox, entry["bbox_b"])          # gt inside detection
-                rev = _containment(entry["bbox_b"] and det.bbox, entry["bbox_b"]) if False else (
-                    _reverse_containment(det.bbox, entry["bbox_b"]))   # detection inside gt
-                score = max(fwd, 0.0 if fwd >= 0.5 else rev * 0.9)
-                if fwd < 0.5 and rev >= 0.7:
-                    score = max(score, 0.5)
-                if score > best_score:
-                    best_i, best_score = i, score
-            if best_i >= 0 and best_score >= 0.5:
-                used_by[best_i] = used_by.get(best_i, 0) + 1
-                matched.append((entry, result.detections[best_i]))
-            else:
-                weak = any(0.0 < _containment(d.bbox, entry["bbox_b"]) < 0.5 or
-                           0.0 < _reverse_containment(d.bbox, entry["bbox_b"]) < 0.7
-                           for d in result.detections)
-                cat = "localization_weak" if weak else (
-                    "visual_ambiguity" if entry.get("moved_only") else "detection_miss")
-                failures.append({"case": case["case_id"], "stage": "detection", "category": cat,
-                                 "expected": f"{entry['change_type']} @ {entry['bbox_b']}",
-                                 "predicted": "none", "component": entry["component_id"],
-                                 "reason": gt.get("note", "")})
-        fp_idx = [i for i in range(len(result.detections)) if i not in used_by]
+        matched_pairs, fp_idx, fn_idx = matching_mod.match_detections(
+            [d.bbox for d in result.detections], entries)
+        matched = [(entries[gi], result.detections[di]) for gi, di in matched_pairs]
+        for gi in fn_idx:
+            entry = entries[gi]
+            weak = matching_mod.weakly_localized([d.bbox for d in result.detections], entry["bbox_b"])
+            cat = "localization_weak" if weak else (
+                "visual_ambiguity" if entry.get("moved_only") else "detection_miss")
+            failures.append({"case": case["case_id"], "stage": "detection", "category": cat,
+                             "expected": f"{entry['change_type']} @ {entry['bbox_b']}",
+                             "predicted": "none", "component": entry["component_id"],
+                             "reason": gt.get("note", "")})
         for i in fp_idx:
             cat = "irrelevant_noise_fp" if case["difficulty"] == "trap" else "spurious_detection"
             failures.append({"case": case["case_id"], "stage": "detection", "category": cat,
