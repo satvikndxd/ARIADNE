@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+body {
+  @apply bg-ink-950 text-slate-300 font-sans text-[13px] leading-relaxed antialiased;
+}
+
+.blueprint-bg {
+  background-image:
+    linear-gradient(rgba(77, 143, 209, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(77, 143, 209, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.panel { @apply bg-ink-900 border border-line; }
+.panel-title {
+  @apply px-3 py-2 border-b border-line text-[11px] uppercase tracking-[0.14em] text-slate-400 font-mono flex items-center gap-2;
+}
+.mono { @apply font-mono; }
+.kv { @apply flex justify-between gap-3 px-3 py-1.5 border-b border-line/60 last:border-0; }
+.kv > span:first-child { @apply text-slate-500; }
+.kv > span:last-child { @apply text-slate-200 text-right; }
+
+.btn {
+  @apply px-3 py-1.5 border border-line bg-ink-800 text-slate-200 text-[12px] font-mono
+         hover:border-cad-blue/60 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+}
+.btn-primary { @apply border-cad-orange/70 text-cad-orange hover:border-cad-orange hover:text-orange-300; }
+.btn-danger { @apply border-cad-red/70 text-cad-red hover:border-cad-red; }
+
+.input {
+  @apply bg-ink-850 border border-line px-2.5 py-1.5 text-[12.5px] text-slate-200 w-full
+         focus:outline-none focus:border-cad-blue/70 placeholder:text-slate-600;
+}
+
+.chip { @apply inline-flex items-center gap-1 px-1.5 py-0.5 border text-[10.5px] font-mono uppercase tracking-wider; }
+
+table.dense { @apply w-full text-[12px]; }
+table.dense th {
+  @apply text-left px-3 py-1.5 text-[10.5px] uppercase tracking-wider text-slate-500 font-mono
+         border-b border-line bg-ink-850/60 sticky top-0;
+}
+table.dense td { @apply px-3 py-1.5 border-b border-line/50 align-top; }
+table.dense tr:hover td { @apply bg-ink-800/50; }
+
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { @apply bg-ink-700; }
+.scroll-thin::-webkit-scrollbar-track { @apply bg-transparent; }
+
+.drawing-paper { @apply bg-[#f4f4f1] relative overflow-hidden; }
+.overlay-box { @apply absolute border-2 cursor-pointer transition-all; }

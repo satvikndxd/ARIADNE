@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: deps
+        run: |
+          pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" sqlalchemy alembic pydantic pydantic-settings httpx \
+                      numpy pillow opencv-python-headless pypdf reportlab python-multipart pytest
+      - name: dataset
+        run: |
+          python scripts/generate_drawings.py
+          python scripts/generate_documents.py
+          python scripts/seed.py
+      - name: pytest
+        run: cd apps/api && python -m pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: cd apps/web && npm ci || npm install
+      - run: cd apps/web && npx tsc -b && npx vitest run && npm run build
+
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: cd apps/mcp-server && npm ci || npm install
+      - run: cd apps/mcp-server && npx tsc -p tsconfig.json --noEmit && npx vitest run
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: python deps + dataset
+        run: |
+          pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" sqlalchemy alembic pydantic pydantic-settings httpx \
+                      numpy pillow opencv-python-headless pypdf reportlab python-multipart
+          python scripts/generate_drawings.py
+          python scripts/generate_documents.py
+          python scripts/seed.py
+      - name: build web + mcp
+        run: |
+          cd apps/web && npm install && npm run build
+          cd ../mcp-server && npm install && npm run build
+      - name: start stack
+        run: |
+          (cd apps/api && nohup python -m uvicorn app.main:app --port 8000 &) 
+          (cd apps/mcp-server && nohup node dist/index.js &)
+          (cd apps/web && nohup npx vite preview --port 4173 &)
+          sleep 8
+      - name: playwright
+        run: |
+          cd apps/web
+          npx playwright install --with-deps chromium
+          E2E_BASE_URL=http://127.0.0.1:4173 npx playwright test
