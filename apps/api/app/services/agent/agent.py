@@ -175,14 +175,14 @@ class AgentRunner:
             ctx.affected = run.result_json.get("affected_components", [])
         if req.component_id:
             ctx.component_id = req.component_id
-        elif ctx.affected:
-            ctx.component_id = ctx.affected[0].get("component_id")
         else:
+            # explicit mention in the message wins, then the analysis' affected set
             names = {c.name.lower(): c.id for c in self.session.scalars(select(Component)).all()}
-            for name, cid in names.items():
-                if name in req.message.lower():
-                    ctx.component_id = cid
-                    break
+            mention = next((cid for name, cid in names.items() if name in req.message.lower()), None)
+            if mention:
+                ctx.component_id = mention
+            elif ctx.affected:
+                ctx.component_id = ctx.affected[0].get("component_id")
         if not ctx.component_id and ctx.project_id:
             proj = self.session.get(Project, ctx.project_id)
             ctx.component_id = (proj.metadata_json or {}).get("primary_component") if proj else None
@@ -277,8 +277,13 @@ class AgentRunner:
                          outputs: list[dict]) -> tuple[PendingAction | None, bool]:
         insufficient = not evidence
         checks = [c for c in (ctx.analysis or {}).get("deterministic_checks", []) if c["result"] in ("fail", "flag")]
-        proposed = next((p for p in (ctx.analysis or {}).get("proposed_findings", [])
-                         if p.get("component_id") == ctx.component_id), None)
+        proposals = (ctx.analysis or {}).get("proposed_findings", [])
+        proposed = next((p for p in proposals if p.get("component_id") == ctx.component_id), None) \
+            or (proposals[0] if proposals else None)
+        if proposed and proposed.get("component_id"):
+            ctx.component_id = proposed["component_id"]
+            comp = self.session.get(Component, ctx.component_id)
+            ctx.component_name = comp.name if comp else ctx.component_name
         title = (proposed or {}).get("title") or (
             f"Review: potential impact on {ctx.component_name or 'component'} after revision change"
         )
