@@ -113,7 +113,19 @@ Key points:
 * **Nine-stage asynchronous analysis pipeline** with persisted progress events.
 * **Layered change detection**: normalisation → ORB/RANSAC registration →
   absdiff+morphology+connected components → manifest diff → cross-check →
-  optional VLM interpretation. The LLM never invents a difference: structured
+  optional VLM interpretation.
+* **VLM perception layer** (Qwen2.5-VL-7B-Instruct via any OpenAI-compatible
+  vision endpoint): strict-JSON interpretation of candidate crops, cross-checked
+  against structured data and CV (`AGREED / CONFLICT / UNCERTAIN`, disagreements
+  surfaced in the UI). Never authoritative: rules, authz and state stay
+  deterministic/server-side (`docs/vlm.md`).
+* **Semantic embeddings** (default `BAAI/bge-m3`, configurable; local
+  sentence-transformers or remote endpoint) with the lexical hashing embedder
+  retained as offline fallback; backend reported at startup and index
+  auto-rebuilt on backend change.
+* **Blind revision benchmark** (24 cases, ground truth unreadable by the
+  analyzer, enforced by directory/module/process contracts) with failure
+  analysis (`docs/benchmark.md`). The LLM never invents a difference: structured
   values come from manifests; CV regions act as an independent second signal;
   unmapped pixel differences are reported *uninterpreted*.
 * **Deterministic rules engine**: requirements carry machine-readable rules
@@ -235,6 +247,9 @@ See [`.env.example`](.env.example) — the authoritative list. Highlights:
 ## Testing
 
 ```bash
+make eval-blind    # blind benchmark: CV-only vs CV+VLM + failure analysis
+make eval-rag      # retrieval baselines A–E (+graph arm)
+make eval-vlm      # VLM arm (labels not-run without an endpoint)
 make test          # pytest (api) + vitest (web) + vitest (mcp)
 cd apps/api && python -m pytest -q          # 33 tests
 cd apps/web && npx vitest run               # component tests
@@ -291,6 +306,12 @@ study.
   environments (recorded as `in-process-fallback`); the MCP server itself is
   verified by `scripts/mcp_probe.py`.
 * Single-node prototype: no clustering, no HNSW, no Kubernetes — deliberately.
+* The VLM arm of the blind benchmark is **not measured** in environments
+  without a vision endpoint; reports carry `not_run_no_vlm_endpoint` and no VLM
+  accuracy claim is made anywhere.
+* Semantic retrieval was measured in the sandbox with
+  `all-MiniLM-L6-v2` (1 GB RAM budget); the configured default `BAAI/bge-m3`
+  requires more memory. Reports name the model actually loaded.
 * Headless Chromium in memory-constrained sandboxes can fail with
   `V8 process OOM (Failed to reserve virtual memory for CodeRange)`; launch with
   `--js-flags=--jitless` there (the Playwright config and CI are unaffected).

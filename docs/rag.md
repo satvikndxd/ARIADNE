@@ -42,6 +42,22 @@ Retrieved text is wrapped in `<evidence>` fences and treated as data. Chunks
 matching instruction-shaped patterns, or from untrusted authorities, are
 quarantined: down-weighted, badged in the UI, and excluded from synthesis.
 
+## Embedding backends (precedence, reported at startup)
+1. **remote semantic** — `EMBEDDING_BASE_URL`/`EMBEDDING_API_KEY` set (any
+   OpenAI-compatible `/embeddings`),
+2. **local semantic** — `sentence-transformers` importable; model from
+   `EMBEDDING_MODEL` (default `BAAI/bge-m3`; HF cache or download),
+3. **lexical fallback** — hashed bag-of-words (deterministic, offline).
+
+`/system/status` reports `{provider, semantic, reason, model}`; the vector
+index self-rebuilds (`ensure_index_current`) when backend or dim changes, so a
+stale lexical index can never masquerade as semantic.
+
+Scoring contributions per hit remain transparent: `dense_score` (semantic or
+lexical), `lexical_score` (BM25 overlap), `metadata_boost` (component /
+revision / document-type / authority), plus the fusion rank score used by
+revision-aware strategies.
+
 ## Known limitations
 * The offline embedder is a hashed bag-of-words projection: lexical overlap
   only. Narrative queries that need true semantic bridging underperform until

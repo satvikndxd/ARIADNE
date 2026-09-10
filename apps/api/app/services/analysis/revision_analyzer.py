@@ -29,8 +29,15 @@ from app.core.errors import DrawingNotFoundError
 from app.core.logging import Timer, get_logger
 from app.db.models import Drawing, Revision
 from app.schemas.common import BoundingBox, ChangeType, DetectionMethod
+from app.services.analysis.consensus import Signal, combine
 from app.services.vision import differencing, registration
-from app.services.vision.providers import VisionProvider, crop_region, get_vision_provider
+from app.services.vision.providers import (
+    VisionProvider,
+    crop_region,
+    diff_overlay,
+    get_vision_provider,
+    vision_active,
+)
 
 log = get_logger(__name__)
 
@@ -196,12 +203,16 @@ def _region_confirms(bbox: BoundingBox, regions: list[differencing.Region]) -> b
 
 
 class StructuredRevisionAnalyzer:
-    """Deterministic manifest diff + OpenCV second signal.  Default."""
+    """Deterministic manifest diff + OpenCV second signal + optional VLM third.
 
-    name = "structured+cv"
+    The VLM is a perception signal only; its interpretation is cross-checked
+    against structured and CV signals (``analysis/consensus.py``) and any
+    disagreement is surfaced, never silently merged.
+    """
 
     def __init__(self, vision: VisionProvider | None = None) -> None:
         self._vision = vision or get_vision_provider()
+        self.name = "structured+cv+vlm" if vision_active() else "structured+cv"
 
     def analyze(self, session: Session, rev_a: Revision, rev_b: Revision) -> AnalyzerOutput:
         out = AnalyzerOutput(method=self.name)
@@ -247,50 +258,58 @@ class StructuredRevisionAnalyzer:
                         metadata={"area": r.area, "mean_delta": r.mean_delta},
                     )
                 )
+        self._attach_vlm_signals(out, rev_a, rev_b)
         return out
 
+    # ------------------------------------------------------------------ #
+    def _attach_vlm_signals(self, out: AnalyzerOutput, rev_a: Revision, rev_b: Revision) -> None:
+        if not vision_active():
+            for cand in out.changes:
+                cand.metadata.setdefault("signals", combine(
+                    Signal("structured", True, cand.change_type.value, cand.old_value, cand.new_value,
+                           0.95, "manifest diff"),
+                    Signal("cv", cand.cv_confirmed, None, None, None,
+                           0.8 if cand.cv_confirmed else 0.0,
+                           "pixel-diff region confirmed" if cand.cv_confirmed else "no matching pixel-diff region"),
+                    None,
+                ).as_dict())
+            return
+        import cv2  # deferred: only needed when a VLM endpoint is configured
 
-class VisionRevisionAnalyzer:
-    """Live mode: CV candidates are interpreted by a VLM; manifest still supplies
-    the structured values so nothing is hallucinated."""
-
-    name = "cv+vlm"
-
-    def __init__(self, vision: VisionProvider) -> None:
-        self._vision = vision
-        self._inner = StructuredRevisionAnalyzer(vision)
-
-    def analyze(self, session: Session, rev_a: Revision, rev_b: Revision) -> AnalyzerOutput:
-        out = self._inner.analyze(session, rev_a, rev_b)
         da = next((d for d in rev_a.drawings if (d.metadata_json or {}).get("drawing_kind") == "part"), None)
         db = next((d for d in rev_b.drawings if (d.metadata_json or {}).get("drawing_kind") == "part"), None)
-        if not da or not db or not self._vision.available():
-            return out
-        import cv2  # local import: only needed in live vision mode
-
+        if da is None or db is None:
+            return
         img_a, img_b = cv2.imread(str(Path(da.storage_path))), cv2.imread(str(Path(db.storage_path)))
+        gray_a = registration.normalize(registration.load_grayscale(Path(da.storage_path)))
+        gray_b = registration.normalize(registration.load_grayscale(Path(db.storage_path)))
         for cand in out.changes:
-            if cand.drawing_id != db.id or cand.kind == "cv":
+            if cand.kind == "cv" or cand.drawing_id != db.id:
                 continue
-            crop_a = crop_region(img_a, {"x": cand.location.x, "y": cand.location.y,
-                                         "width": cand.location.width, "height": cand.location.height})
-            crop_b = crop_region(img_b, {"x": cand.location.x, "y": cand.location.y,
-                                         "width": cand.location.width, "height": cand.location.height})
-            interp = self._vision.interpret_region(
-                crop_a, crop_b,
-                {"change_type": cand.change_type.value, "old_value": cand.old_value, "new_value": cand.new_value},
+            bbox = {"x": cand.location.x, "y": cand.location.y,
+                    "width": cand.location.width, "height": cand.location.height}
+            crop_a, crop_b = crop_region(img_a, bbox), crop_region(img_b, bbox)
+            overlay = diff_overlay(gray_a, gray_b, bbox)
+            interp = self._vision.extract_structured_change(
+                crop_a, crop_b, overlay,
+                context={"component_id": cand.component_id, "candidate_change_type": cand.change_type.value},
             )
-            cand.description = f"{cand.description} | VLM: {interp.get('description', '')}"
-            cand.metadata["vlm"] = interp
-            if interp.get("confidence"):
-                cand.confidence = round(min(0.98, 0.5 * cand.confidence + 0.5 * float(interp["confidence"])), 3)
-                cand.detection_method = DetectionMethod.HYBRID
-        out.method = self.name
-        return out
+            cand.metadata["vlm"] = interp.model_dump()
+            vlm_signal = None if interp.is_unknown else Signal(
+                "vlm", True, interp.change_type.value, interp.old_value, interp.new_value,
+                interp.confidence, interp.description,
+            )
+            cand.metadata["signals"] = combine(
+                Signal("structured", True, cand.change_type.value, cand.old_value, cand.new_value,
+                       0.95, "manifest diff"),
+                Signal("cv", cand.cv_confirmed, None, None, None,
+                       0.8 if cand.cv_confirmed else 0.0,
+                       "pixel-diff region confirmed" if cand.cv_confirmed else "no matching pixel-diff region"),
+                vlm_signal if vlm_signal else Signal("vlm", False, detail=interp.description or "UNKNOWN"),
+            ).as_dict()
+            if cand.metadata["signals"]["status"] == "CONFLICT":
+                cand.confidence = round(min(cand.confidence, cand.metadata["signals"]["confidence"]), 3)
 
 
 def get_revision_analyzer() -> RevisionAnalyzer:
-    provider = get_vision_provider()
-    if settings.vision_enabled and provider.available() and not settings.demo_mode:
-        return VisionRevisionAnalyzer(provider)
-    return StructuredRevisionAnalyzer(provider)
+    return StructuredRevisionAnalyzer(get_vision_provider())

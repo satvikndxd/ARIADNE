@@ -50,6 +50,14 @@ classifying_changes → mapping_components → traversing_dependencies →
 retrieving_evidence → generating_impact → preparing_review`.
 Runs asynchronously; progress events are persisted and polled by the UI.
 
+### VLM perception + three-signal consensus
+Candidate regions (OpenCV) are cropped from both revisions with a difference
+overlay and sent to a swappable VLM (default Qwen2.5-VL-7B-Instruct via an
+OpenAI-compatible endpoint). Strict JSON output (`VLMInterpretation`) is
+cross-checked against structured project data and the CV signal:
+`AGREED / CONFLICT / UNCERTAIN`, disagreements surfaced with all raw values
+(`docs/vlm.md`). The VLM never evaluates rules, authorizes, or mutates.
+
 ### Change detection (layered, never LLM-only)
 1. normalisation (Gaussian + contrast),
 2. registration (ORB + RANSAC partial affine),
@@ -92,6 +100,12 @@ Single relational schema (25 tables) covering projects, revisions, drawings,
 components + per-revision property snapshots, dependencies, documents,
 chunks, requirements, vector records, analyses, changes, tool executions,
 confirmations, findings + evidence, chat, audit, evaluation.
+
+## Blind evaluation path
+`services/analysis/blind.py` analyzes two images with vision signals only;
+`run_blind_evaluation` opens ground truth strictly afterwards. Separation is
+enforced by directory contract, module contract (source-guard test) and process
+contract (`docs/benchmark.md`).
 
 ## Security model
 * Roles VIEWER/ENGINEER/REVIEWER/ADMIN with a permission catalogue; enforced

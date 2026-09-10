@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     # ---- embeddings --------------------------------------------------------
     embedding_base_url: str = ""
     embedding_api_key: str = ""
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_local_enabled: bool = True
+    embedding_allow_download: bool = True
 
     # ---- vision ------------------------------------------------------------
     vision_base_url: str = ""

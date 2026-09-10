@@ -38,6 +38,11 @@ export function EvaluationPage() {
         ))}
       </div>
 
+      <div className="font-mono text-[10.5px] text-slate-600">
+        all values are <span className="text-cad-green">measured</span> by executing the real pipelines
+        (blind benchmark, retrieval experiment, agent suite); absent subsets are labelled not-run in the
+        JSON report, never estimated.
+      </div>
       {active && (
         <div className="grid grid-cols-2 gap-3">
           {groups.map(([subset, metrics]) => (
@@ -53,6 +58,22 @@ export function EvaluationPage() {
               ))}
             </div>
           ))}
+        </div>
+      )}
+      {active && (
+        <div className="panel">
+          <div className="panel-title">failure analysis · top categories</div>
+          {groups
+            .filter(([subset]) => subset.startsWith("failure:"))
+            .map(([subset, metrics]) => (
+              <div key={subset} className="kv">
+                <span>{subset.replace("failure:", "")}</span>
+                <span className="font-mono">{metrics[0].value} / {metrics[0].n} failures</span>
+              </div>
+            ))}
+          {!groups.some(([subset]) => subset.startsWith("failure:")) && (
+            <div className="px-3 py-2 font-mono text-[11px] text-slate-600">no failures recorded in this run</div>
+          )}
         </div>
       )}
       {active?.report_path && (

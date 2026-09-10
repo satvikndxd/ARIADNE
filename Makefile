@@ -4,7 +4,7 @@ API_DIR := apps/api
 WEB_DIR := apps/web
 MCP_DIR := apps/mcp-server
 
-.PHONY: install seed dev api web mcp test test-api test-web test-mcp eval build clean
+.PHONY: install seed dev api web mcp test test-api test-web test-mcp eval eval-blind eval-rag eval-vlm build clean
 
 install:            ## install python + node dependencies
 	pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "sqlalchemy>=2.0" "alembic>=1.13" \
@@ -45,6 +45,15 @@ test-mcp:
 
 eval:               ## run the evaluation suite and print the report path
 	cd $(API_DIR) && $(PY) -c "import sys;sys.path.insert(0,'.');sys.path.insert(0,'../../packages/evaluation');from app.services.evaluation_service import run_evaluation;import json;r=run_evaluation('make');print(json.dumps({k:v for k,v in r['sections'].items()},indent=1,default=str)[:2000])"
+
+eval-blind:         ## blind revision benchmark (CV-only vs CV+VLM) + failure analysis
+	cd $(API_DIR) && $(PY) -c "import sys;sys.path.insert(0,'.');sys.path.insert(0,'../../packages/evaluation');from app.services.evaluation_service import run_blind_evaluation;import json;r=run_blind_evaluation();print(json.dumps({k:r[k] for k in ('cases','vlm_active','cv_only','cv_vlm','top_failure_categories')},indent=1,default=str))"
+
+eval-rag:           ## retrieval experiment: baselines A-E (+graph arm)
+	cd $(API_DIR) && $(PY) -c "import sys;sys.path.insert(0,'.');sys.path.insert(0,'../../packages/evaluation');from app.services.evaluation_service import run_rag_experiment;import json;r=run_rag_experiment();print(json.dumps({'backend':r['embedding_backend'],'semantic':r['semantic_backend'],'strategies':r['strategies']},indent=1))"
+
+eval-vlm:           ## VLM arm on the blind benchmark (labels not-run without endpoint)
+	cd $(API_DIR) && $(PY) -c "import sys;sys.path.insert(0,'.');sys.path.insert(0,'../../packages/evaluation');from app.services.evaluation_service import run_vlm_evaluation;import json;r=run_vlm_evaluation();print(json.dumps(r.get('cv_vlm',r.get('status')),indent=1,default=str))"
 
 build:
 	cd $(WEB_DIR) && npm run build

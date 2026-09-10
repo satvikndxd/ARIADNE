@@ -15,6 +15,10 @@ TEST_DB = REPO_ROOT / "data" / "test_ariadne.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
 os.environ["DEMO_MODE"] = "1"
 os.environ["MCP_ENABLED"] = "0"
+# tests stay deterministic and memory-bounded: lexical embeddings, no VLM.
+# semantic/VLM arms are measured by the evaluation suites in their own process.
+os.environ["EMBEDDING_LOCAL_ENABLED"] = "0"
+os.environ["VISION_ENABLED"] = "0"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

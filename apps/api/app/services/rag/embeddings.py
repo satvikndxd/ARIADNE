@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import math
 import re
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -33,6 +35,59 @@ def tokenize(text: str) -> list[str]:
         if len(w) > 4:
             feats += [w[i : i + 3] for i in range(len(w) - 2)]
     return feats
+
+
+def _hf_cache_dir() -> Path:
+    home = Path.home()
+    return Path(os.environ.get("HF_HOME", home / ".cache" / "huggingface")) / "hub"
+
+
+def model_in_hf_cache(model: str) -> bool:
+    slug = "models--" + model.replace("/", "--")
+    d = _hf_cache_dir() / slug
+    if not d.is_dir():
+        return False
+    snaps = list((d / "snapshots").glob("*")) if (d / "snapshots").is_dir() else []
+    return any(any(p.is_file() for p in snap.rglob("*")) for snap in snaps)
+
+
+class LocalSemanticEmbeddings:
+    """Real semantic embeddings via sentence-transformers (default BAAI/bge-m3).
+
+    Loaded lazily; if the library or model is unavailable the factory falls
+    back to the lexical embedder and says so in ``/system/status``.
+    """
+
+    def __init__(self, model_name: str, dim: int) -> None:
+        self.model_name = model_name
+        self.dim = dim
+        self._model = None
+
+    @property
+    def name(self) -> str:
+        return f"sentence-transformers:{self.model_name}"
+
+    def _load(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer  # deferred heavy import
+
+            log.info("semantic_embedding_load_start", model=self.model_name)
+            self._model = SentenceTransformer(self.model_name)
+            dim_fn = getattr(self._model, "get_embedding_dimension", None) or self._model.get_sentence_embedding_dimension
+            self.dim = int(dim_fn())
+            log.info("semantic_embedding_loaded", model=self.model_name, dim=self.dim)
+        return self._model
+
+    def _embed(self, texts: list[str]) -> np.ndarray:
+        model = self._load()
+        vecs = model.encode(texts, normalize_embeddings=True, batch_size=16, show_progress_bar=False)
+        return np.asarray(vecs, dtype=np.float64)
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        return self._embed(texts) if texts else np.zeros((0, self.dim))
+
+    def embed_query(self, text: str) -> np.ndarray:
+        return self._embed([text])[0]
 
 
 class EmbeddingProvider(Protocol):
@@ -106,17 +161,46 @@ class OpenAICompatibleEmbeddings:
 _provider: EmbeddingProvider | None = None
 
 
-def get_embedding_provider() -> EmbeddingProvider:
-    global _provider
-    if _provider is not None:
-        return _provider
+def resolve_embedding_provider() -> tuple[EmbeddingProvider, str]:
+    """Precedence: remote semantic → local semantic → lexical fallback.
+
+    Returns (provider, reason) so startup logging and ``/system/status`` can
+    explain *why* a backend is active.
+    """
     if settings.embeddings_configured:
         base = settings.embedding_base_url or settings.llm_base_url
         key = settings.embedding_api_key or settings.llm_api_key
-        _provider = OpenAICompatibleEmbeddings(base, key, settings.embedding_model, settings.embedding_dim)
-    else:
-        _provider = HashingEmbeddings()
+        return OpenAICompatibleEmbeddings(base, key, settings.embedding_model, settings.embedding_dim), \
+            "remote endpoint configured"
+    if settings.embedding_local_enabled:
+        import importlib.util
+
+        if importlib.util.find_spec("sentence_transformers") is None:
+            return HashingEmbeddings(), "sentence-transformers not installed → lexical fallback"
+        if not settings.embedding_allow_download and not model_in_hf_cache(settings.embedding_model):
+            return HashingEmbeddings(), f"{settings.embedding_model} not in HF cache and downloads disabled"
+        try:
+            return LocalSemanticEmbeddings(settings.embedding_model, settings.embedding_dim), \
+                f"local semantic model {settings.embedding_model}"
+        except Exception as exc:  # pragma: no cover - environment dependent
+            log.warning("semantic_embedding_unavailable", error=str(exc))
+            return HashingEmbeddings(), f"semantic model failed to load ({exc}) → lexical fallback"
+    return HashingEmbeddings(), "local semantic embeddings disabled"
+
+
+def get_embedding_provider() -> EmbeddingProvider:
+    global _provider
+    if _provider is None:
+        _provider, _reason = resolve_embedding_provider()
+        log.info("embedding_backend", provider=_provider.name, reason=_reason)
     return _provider
+
+
+def embedding_backend_report() -> dict:
+    provider, reason = (_provider, "active") if _provider is not None else resolve_embedding_provider()
+    semantic = not isinstance(provider, HashingEmbeddings)
+    return {"provider": provider.name, "semantic": semantic, "reason": reason,
+            "model": getattr(provider, "model_name", getattr(provider, "model", "hashing"))}
 
 
 def reset_provider_cache() -> None:

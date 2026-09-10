@@ -1,20 +1,32 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { useState } from "react";
-import { useOutletContext, useSearchParams } from "react-router-dom";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 
 import { FindingTable } from "../components/FindingTable";
 import { ConfidenceBadge, SeverityBadge, StatusBadge } from "../components/badges";
-import { api, ApiError, currentRole } from "../lib/api";
+import { api, ApiError, API_BASE, currentRole, currentUser } from "../lib/api";
 import type { FindingStatus } from "../types/api";
 
 export function FindingsPage() {
   const { projectId } = useOutletContext<{ projectId: string }>();
   const [params] = useSearchParams();
   const qc = useQueryClient();
+  const nav = useNavigate();
   const findings = useQuery({ queryKey: ["findings", projectId], queryFn: () => api.findings(projectId) });
   const selectedId = params.get("f") ?? findings.data?.[0]?.id ?? null;
   const sel = (findings.data ?? []).find((f) => f.id === selectedId) ?? null;
   const [note, setNote] = useState("");
+  const chain = useQuery({
+    queryKey: ["chain", selectedId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/findings/${selectedId}/chain`, {
+        headers: { "x-ariadne-user": currentUser() },
+      });
+      return (await res.json()) as { finding_id: string; chain: { type: string; id: string | null; label: string; detail: string; link?: string }[] };
+    },
+    enabled: !!selectedId,
+  });
   const role = currentRole();
   const canReview = role === "REVIEWER" || role === "ADMIN";
 
@@ -64,6 +76,25 @@ export function FindingsPage() {
                 <div className="text-[11.5px] text-slate-400 mt-0.5">{e.excerpt}</div>
               </div>
             ))}
+            <div className="panel-title">evidence chain · backward-traceable</div>
+            <div className="px-3 py-2 space-y-1.5">
+              {(chain.data?.chain ?? []).map((n, i) => (
+                <div key={`${n.type}-${i}`} className="border-l-2 border-line pl-2">
+                  <div className="flex items-center gap-2 font-mono text-[10.5px]">
+                    <span className="chip border-line text-slate-400">{n.type}</span>
+                    {n.link ? (
+                      <button className="text-cad-blue hover:underline" onClick={() => nav(n.link!)}>
+                        {n.label}
+                      </button>
+                    ) : (
+                      <span className="text-slate-200">{n.label}</span>
+                    )}
+                  </div>
+                  <div className="text-[10.5px] text-slate-500">{n.detail}</div>
+                </div>
+              ))}
+              {!chain.data && <div className="font-mono text-[10.5px] text-slate-600">loading chain…</div>}
+            </div>
             <div className="p-3 space-y-2 border-t border-line">
               <input className="input" placeholder="review note…" value={note} onChange={(e) => setNote(e.target.value)} />
               <div className="flex gap-2">

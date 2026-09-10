@@ -301,8 +301,25 @@ def render_side_view(draw, rev: dict[str, Any], items: list[dict[str, Any]]) -> 
     items.append(_item("overall_height", "dimension", "overall_height", hlabel, rev["overall_height"], "mm", bbox))
 
 
+def render_noise(draw, rev: dict[str, Any]) -> None:
+    """Irrelevant drawing noise (speckles/stray dashes) for blind-benchmark hardness."""
+    seed = rev.get("noise_seed")
+    if seed is None:
+        return
+    import random
+
+    rng = random.Random(seed)
+    for _ in range(int(rev.get("noise_count", 14))):
+        x = rng.randint(60, W - 80)
+        y = rng.randint(120, H - 60)
+        if rng.random() < 0.5:
+            draw.ellipse([x, y, x + rng.randint(1, 3), y + rng.randint(1, 3)], outline=FAINT, width=1)
+        else:
+            draw.line([x, y, x + rng.randint(4, 14), y + rng.randint(-3, 3)], fill=FAINT, width=1)
+
+
 def render_notes(draw, rev: dict[str, Any], items: list[dict[str, Any]]) -> None:
-    x, y = 70, 706
+    x, y = 70, 706 + int(rev.get("notes_dy", 0))
     _text(draw, x, y, "NOTES", F_LABEL)
     draw.line([x, y + 30, x + 600, y + 30], fill=INK, width=2)
     notes = [
@@ -312,8 +329,10 @@ def render_notes(draw, rev: dict[str, Any], items: list[dict[str, Any]]) -> None
         ("deburr_note", "4. DEBURR ALL EDGES. NO SHARP CORNERS.", "DEBURR"),
         ("mass_note", f"5. MASS: {rev['mass_g']:.0f} g (REFERENCE)", rev["mass_g"]),
     ]
-    for i, (key, text, value) in enumerate(notes):
-        bbox = _text(draw, x, y + 44 + i * 28, text, F_SMALL)
+    order = rev.get("notes_order", list(range(len(notes))))
+    for row, idx in enumerate(order):
+        key, text, value = notes[idx]
+        bbox = _text(draw, x, y + 44 + row * 28, text, F_SMALL)
         items.append(_item(key, "annotation", key, text, value, "", bbox))
 
 
@@ -348,12 +367,20 @@ def render_part_drawing(rev: dict[str, Any], out_dir: Path) -> dict[str, Any]:
     draw = ImageDraw.Draw(img)
     items: list[dict[str, Any]] = []
     render_frame(draw)
-    _text(draw, 56, 46, f"ORION EV  ·  {rev['name']}  ·  MOTOR MOUNT  ·  {rev['dwg_no']}", F_TITLE)
+    x = 56
+    for seg, record in ((f"ORION EV  ·  ", False), (rev["name"], True),
+                        (f"  ·  MOTOR MOUNT  ·  {rev['dwg_no']}", False)):
+        bbox = _text(draw, x, 46, seg, F_TITLE)
+        if record:
+            items.append(_item("header_revision", "metadata", "header_revision", seg.strip(), seg.strip(),
+                               "", bbox))
+        x += int(draw.textlength(seg, font=F_TITLE))
     _text(draw, 56, 84, "SYNTHETIC DATASET — NOT A REAL MANUFACTURING DOCUMENT", F_SMALL, FAINT)
     render_front_view(draw, rev, items)
     render_side_view(draw, rev, items)
     render_notes(draw, rev, items)
     render_title_block(draw, rev, items)
+    render_noise(draw, rev)
     filename = f"motor_mount_DWG-042_rev{rev['label']}.png"
     img.save(out_dir / filename, "PNG")
     return {"file": filename, "items": items, "kind": "part"}

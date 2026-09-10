@@ -38,13 +38,24 @@ def get_run(run_id: str, session: Session = Depends(get_session),
     }
 
 
+SUITE_RUNNERS = {
+    "full": "run_evaluation",
+    "blind": "run_blind_evaluation",
+    "rag": "run_rag_experiment",
+    "vlm": "run_vlm_evaluation",
+}
+
+
 @router.post("/evaluation/run", status_code=202)
-def start_run(name: str = "manual", session: Session = Depends(get_session),
+def start_run(name: str = "manual", suite: str = "full",
+              session: Session = Depends(get_session),
               principal: Principal = Depends(current_principal)):
-    from app.services.evaluation_service import run_evaluation
+    import app.services.evaluation_service as evs
+
+    fn = getattr(evs, SUITE_RUNNERS.get(suite, "run_evaluation"))
 
     def _bg() -> None:
-        run_evaluation(name=name)
+        fn(name=name)
 
-    threading.Thread(target=_bg, name=f"eval-{name}", daemon=True).start()
-    return {"status": "queued", "name": name}
+    threading.Thread(target=_bg, name=f"eval-{suite}-{name}", daemon=True).start()
+    return {"status": "queued", "name": name, "suite": suite}

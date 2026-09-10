@@ -1,7 +1,8 @@
 """Analysis job endpoints (async, progress-streamable)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -91,3 +92,49 @@ def analysis_tools(analysis_id: str, session: Session = Depends(get_session),
         {"id": t.id, "tool": t.tool_name, "arguments": t.arguments_json, "status": t.status,
          "transport": t.transport, "mutating": t.mutating, "latency_ms": t.latency_ms,
          "timestamp": t.timestamp, "error": t.error} for t in rows]}
+
+
+@router.get("/analysis/{analysis_id}/changes/{change_id}/crop")
+def change_crop(analysis_id: str, change_id: str, side: str = Query(default="b", pattern="^(a|b)$"),
+                pad: int = Query(default=12, ge=0, le=60),
+                session: Session = Depends(get_session),
+                principal: Principal = Depends(current_principal)):
+    """PNG crop of a detected change region from either revision (visual evidence)."""
+    import io
+    from pathlib import Path
+
+    from PIL import Image
+
+    from app.core.errors import NotFoundError
+    from app.db.models import Change, Drawing
+
+    run = session.get(AnalysisRun, analysis_id)
+    if run is None:
+        raise NotFoundError(f"Analysis '{analysis_id}' not found.")
+    change = session.scalars(select(Change).where(Change.id == change_id,
+                                                   Change.analysis_run_id == analysis_id)).first()
+    if change is None:
+        # tolerate semantic ids (compare-phase changes carry the semantic as id)
+        change = session.scalars(
+            select(Change).where(Change.analysis_run_id == analysis_id)
+        ).all() and next((c for c in session.scalars(
+            select(Change).where(Change.analysis_run_id == analysis_id)).all()
+            if (c.metadata_json or {}).get("semantic") == change_id), None)
+    if change is None:
+        raise NotFoundError(f"Change '{change_id}' not found.")
+    revision_id = run.revision_a_id if side == "a" else run.revision_b_id
+    drawing = session.scalars(
+        select(Drawing).where(Drawing.revision_id == revision_id, Drawing.drawing_type == "part")
+    ).first()
+    if drawing is None or not Path(drawing.storage_path).exists():
+        raise NotFoundError("Drawing for this revision side is missing.")
+    loc = change.location_json or {}
+    img = Image.open(drawing.storage_path)
+    x1 = max(0, int(loc.get("x", 0)) - pad)
+    y1 = max(0, int(loc.get("y", 0)) - pad)
+    x2 = min(img.width, int(loc.get("x", 0) + loc.get("width", 0)) + pad)
+    y2 = min(img.height, int(loc.get("y", 0) + loc.get("height", 0)) + pad)
+    buf = io.BytesIO()
+    img.crop((x1, y1, x2, y2)).save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png",
+                    headers={"cache-control": "public, max-age=3600"})

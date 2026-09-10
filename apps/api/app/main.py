@@ -88,9 +88,28 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def _startup() -> None:
+        import threading
+
         init_db()
+        from app.services.rag.embeddings import embedding_backend_report
+        from app.services.vision.providers import get_vision_provider, vision_active
+
+        report = embedding_backend_report()
         log.info("api_started", demo_mode=settings.demo_mode, db="sqlite" if settings.is_sqlite else "postgres",
-                 vector_store=settings.effective_vector_store, graph_store=settings.effective_graph_store)
+                 vector_store=settings.effective_vector_store, graph_store=settings.effective_graph_store,
+                 embedding_backend=report["provider"], semantic_embeddings=report["semantic"],
+                 vision_provider=get_vision_provider().name, vision_active=vision_active())
+
+        def _warm() -> None:
+            try:
+                from app.services.rag.ingestion import ensure_index_current
+
+                outcome = ensure_index_current()
+                log.info("vector_index_check", **{k: str(v) for k, v in outcome.items()})
+            except Exception as exc:  # noqa: BLE001
+                log.error("vector_index_check_failed", error=str(exc))
+
+        threading.Thread(target=_warm, name="embed-index-warm", daemon=True).start()
 
     return app
 

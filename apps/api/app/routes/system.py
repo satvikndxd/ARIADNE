@@ -8,9 +8,10 @@ from app.core.config import settings
 from app.db.base import SessionLocal
 from app.db.models import DocumentChunk, VectorRecord
 from app.services.llm.base import get_llm_provider
-from app.services.rag.embeddings import get_embedding_provider
+from app.services.rag.embeddings import embedding_backend_report
 from app.services.rag.vector_store import get_vector_store
 from app.services.graph import get_graph_store
+from app.services.vision.providers import get_vision_provider, vision_active
 from app.services.agent.gateway import mcp_healthy
 
 router = APIRouter(tags=["system"])
@@ -30,9 +31,10 @@ def status():
         "demo_mode": settings.demo_mode,
         "llm": {"provider": get_llm_provider().name, "live": bool(settings.llm_configured),
                 "model": settings.llm_model},
-        "embeddings": {"provider": get_embedding_provider().name, "dim": settings.embedding_dim,
+        "embeddings": {**embedding_backend_report(), "dim": settings.embedding_dim,
                        "live": bool(settings.embeddings_configured)},
-        "vision": {"enabled": settings.vision_enabled, "model": settings.vision_model},
+        "vision": {"enabled": settings.vision_enabled, "model": settings.vision_model,
+                   "provider": get_vision_provider().name, "active": vision_active()},
         "vector_store": get_vector_store().name,
         "graph_store": get_graph_store().name,
         "mcp": {"enabled": settings.mcp_enabled, "url": settings.mcp_server_url, "healthy": mcp_healthy()},

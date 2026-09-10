@@ -47,9 +47,15 @@ class DiffResult:
     method: str = "absdiff_morphology_ccomponents"
 
 
-def diff_regions(gray_a: np.ndarray, gray_b: np.ndarray, *, min_area: int = 90, dilate: int = 5) -> DiffResult:
+def diff_regions(gray_a: np.ndarray, gray_b: np.ndarray, *, min_area: int = 90, dilate: int = 5,
+                 despeckle: bool = False) -> DiffResult:
     diff = cv2.absdiff(gray_a, gray_b)
     _, thresh = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
+    if despeckle:
+        # remove isolated speckles (scan noise / benchmark noise fields) while
+        # keeping strokes: opening with a small kernel before closing.
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
+                                  cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate, dilate))
     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     closed = cv2.dilate(closed, kernel, iterations=1)

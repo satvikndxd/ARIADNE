@@ -1,24 +1,35 @@
-"""Vision providers.
+"""Vision providers — perception only, never authority.
 
-The VLM is a *perception* component, never the source of truth: it interprets
-candidate regions produced by OpenCV / the manifest diff.  Offline, the
-deterministic provider reports that no visual interpretation was performed —
-and the analyzer falls back to manifest-diff detection (labelled as such).
+``VisionProvider`` implementations:
+
+* ``OpenAICompatibleVision`` — any OpenAI-compatible *vision* endpoint
+  (``VISION_BASE_URL`` / ``VISION_API_KEY`` / ``VISION_MODEL``, default model
+  name ``Qwen/Qwen2.5-VL-7B-Instruct``).  Sends revision-A crop, revision-B
+  crop and a difference overlay; requests strict JSON matching
+  ``schemas.vision.VLM_JSON_SCHEMA``; parses into ``VLMInterpretation``.
+  Nothing outside that model reaches downstream code.
+* ``DeterministicVision`` — offline marker: ``available() is False``, so the
+  pipeline runs structured+CV only and labels the VLM signal as not-run.
+
+The VLM never decides authorization, numeric rule violations, permissions,
+database state or compliance.  Its output is one of three cross-checked
+signals (see ``analysis/consensus.py``), and its free text is scanned for
+instruction-shaped content before storage.
 """
 from __future__ import annotations
 
 import base64
-import json
-from pathlib import Path
+import time
 from typing import Any, Protocol
 
 import httpx
 import numpy as np
 
 from app.core.config import settings
+from app.core.content_security import scan_for_injection
 from app.core.logging import get_logger
-from app.services.llm.base import LLMResponse
-from app.services.llm.prompts import INTERPRET_SCHEMA, interpret_prompt
+from app.schemas.vision import VLMInterpretation, VLMChangeType
+from app.services.vision.prompts import VLM_SYSTEM_PROMPT, vlm_user_prompt
 
 log = get_logger(__name__)
 
@@ -26,26 +37,53 @@ log = get_logger(__name__)
 class VisionProvider(Protocol):
     name: str
 
-    def interpret_region(self, crop_a: np.ndarray, crop_b: np.ndarray, hint: dict) -> dict[str, Any]: ...
-
     def available(self) -> bool: ...
+
+    def analyze_region(
+        self,
+        crop_a: np.ndarray,
+        crop_b: np.ndarray,
+        diff_crop: np.ndarray | None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def extract_structured_change(
+        self,
+        crop_a: np.ndarray,
+        crop_b: np.ndarray,
+        diff_crop: np.ndarray | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> VLMInterpretation: ...
+
+
+def _encode_png(img: np.ndarray) -> str:
+    import cv2
+
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise ValueError("could not encode crop")
+    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode()
 
 
 class DeterministicVision:
-    name = "deterministic-demo"
+    """No VLM configured: explicitly reports that no visual interpretation ran."""
+
+    name = "none"
 
     def available(self) -> bool:
-        return True
+        return False
 
-    def interpret_region(self, crop_a, crop_b, hint) -> dict[str, Any]:
-        return {
-            "change_type": hint.get("change_type", "METADATA_CHANGE"),
-            "old_value": hint.get("old_value"),
-            "new_value": hint.get("new_value"),
-            "description": hint.get("description", "No visual interpretation performed (demo mode)."),
-            "confidence": 0.0,
-            "source": "none",
-        }
+    def analyze_region(self, crop_a, crop_b, diff_crop=None, context=None) -> dict[str, Any]:
+        return {}
+
+    def extract_structured_change(self, crop_a, crop_b, diff_crop=None, context=None) -> VLMInterpretation:
+        return VLMInterpretation(
+            change_type=VLMChangeType.UNKNOWN,
+            description="VLM not configured; no visual interpretation performed.",
+            provider=self.name,
+        )
 
 
 class OpenAICompatibleVision:
@@ -59,50 +97,89 @@ class OpenAICompatibleVision:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    @staticmethod
-    def _encode(crop: np.ndarray) -> str:
-        import cv2
-
-        ok, buf = cv2.imencode(".png", crop)
-        if not ok:
-            raise ValueError("could not encode crop")
-        return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode()
-
-    def interpret_region(self, crop_a, crop_b, hint) -> dict[str, Any]:
+    def analyze_region(self, crop_a, crop_b, diff_crop=None, context=None) -> dict[str, Any]:
+        content: list[dict[str, Any]] = [{"type": "text", "text": vlm_user_prompt(context)}]
+        for img in (crop_a, crop_b, diff_crop):
+            if img is not None:
+                content.append({"type": "image_url", "image_url": {"url": _encode_png(img)}})
         payload = {
             "model": self.model,
             "temperature": 0.0,
             "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": interpret_prompt() + f"\nCandidate hint: {json.dumps(hint)}"},
-                        {"type": "image_url", "image_url": {"url": self._encode(crop_a)}},
-                        {"type": "image_url", "image_url": {"url": self._encode(crop_b)}},
-                    ],
-                }
+                {"role": "system", "content": VLM_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "region_interpretation", "schema": INTERPRET_SCHEMA, "strict": True},
+                "json_schema": {"name": "ariadne_region_interpretation",
+                                "schema": __import__("app.schemas.vision", fromlist=["VLM_JSON_SCHEMA"]).VLM_JSON_SCHEMA,
+                                "strict": True},
             },
         }
-        try:
-            with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
-                resp = client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                )
-                resp.raise_for_status()
-                text = resp.json()["choices"][0]["message"]["content"]
-            from app.services.llm.base import _parse_json
+        t0 = time.perf_counter()
+        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+            resp = client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        out = dict(data)
+        out["_latency_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        return out
 
-            return _parse_json(text) or {"change_type": "ANNOTATION_CHANGE", "description": text, "confidence": 0.2}
-        except Exception as exc:
-            log.error("vision_provider_failed", error=str(exc))
-            return {"change_type": "ANNOTATION_CHANGE", "description": "vision interpretation failed",
-                    "confidence": 0.0, "error": str(exc)}
+    def extract_structured_change(self, crop_a, crop_b, diff_crop=None, context=None) -> VLMInterpretation:
+        try:
+            raw = self.analyze_region(crop_a, crop_b, diff_crop, context)
+        except Exception as exc:  # network / HTTP / provider schema drift
+            log.error("vlm_call_failed", error=str(exc), model=self.model)
+            return VLMInterpretation(
+                change_type=VLMChangeType.UNKNOWN,
+                description="VLM call failed; interpretation unavailable.",
+                error=str(exc)[:300], provider=self.name,
+            )
+        from app.services.llm.base import _parse_json
+
+        message = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = _parse_json(message)
+        if not parsed:
+            return VLMInterpretation(
+                change_type=VLMChangeType.UNKNOWN,
+                description="VLM returned no parseable JSON; discarded.",
+                error="unparseable_vlm_output", provider=self.name,
+                latency_ms=float(raw.get("_latency_ms", 0.0)),
+            )
+        try:
+            interp = VLMInterpretation(
+                change_type=VLMChangeType(parsed.get("change_type", "UNKNOWN")),
+                old_value=parsed.get("old_value"),
+                new_value=parsed.get("new_value"),
+                feature=parsed.get("feature"),
+                confidence=float(parsed.get("confidence", 0.0)),
+                description=str(parsed.get("description", ""))[:600],
+                meaningful=parsed.get("meaningful"),
+                visually_supported=bool(parsed.get("visually_supported", False)),
+                provider=f"{self.name}:{self.model}",
+                latency_ms=float(raw.get("_latency_ms", 0.0)),
+            )
+        except Exception as exc:  # malformed enums / types → UNKNOWN, never prose
+            log.warning("vlm_output_rejected", error=str(exc), raw=message[:200])
+            return VLMInterpretation(
+                change_type=VLMChangeType.UNKNOWN,
+                description="VLM output failed schema validation; discarded.",
+                error=f"schema: {exc}"[:300], provider=self.name,
+            )
+        hits = scan_for_injection(interp.description)
+        if hits:
+            log.warning("vlm_output_quarantined", patterns=len(hits))
+            return VLMInterpretation(
+                change_type=VLMChangeType.UNKNOWN,
+                description="VLM text contained instruction-shaped content; quarantined.",
+                visually_supported=False, error="injection_pattern_in_vlm_output",
+                provider=interp.provider, latency_ms=interp.latency_ms,
+            )
+        return interp
 
 
 def get_vision_provider() -> VisionProvider:
@@ -111,6 +188,11 @@ def get_vision_provider() -> VisionProvider:
         key = settings.vision_api_key or settings.llm_api_key
         return OpenAICompatibleVision(base, key, settings.vision_model)
     return DeterministicVision()
+
+
+def vision_active() -> bool:
+    provider = get_vision_provider()
+    return settings.vision_enabled and provider.available()
 
 
 def crop_region(img: np.ndarray, bbox: dict, pad: int = 10) -> np.ndarray:
@@ -122,7 +204,11 @@ def crop_region(img: np.ndarray, bbox: dict, pad: int = 10) -> np.ndarray:
     return img[y1:y2, x1:x2]
 
 
-def save_crop_png(crop: np.ndarray, path: Path) -> None:
+def diff_overlay(gray_a: np.ndarray, gray_b: np.ndarray, bbox: dict, pad: int = 10) -> np.ndarray:
+    """Heat-map style overlay of |A−B| restricted to the candidate region."""
     import cv2
 
-    cv2.imwrite(str(path), crop)
+    diff = cv2.absdiff(gray_a, gray_b)
+    diff = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
+    color = cv2.applyColorMap(diff.astype(np.uint8), cv2.COLORMAP_INFERNO)
+    return crop_region(color, bbox, pad)

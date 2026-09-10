@@ -274,8 +274,10 @@ def main() -> None:
         print("  seeded findings with evidence ok")
 
     from scripts.generate_benchmark import main as gen_bench
+    from scripts.generate_blind_benchmark import main as gen_blind
 
     gen_bench()
+    gen_blind()
     print("\nSeed complete. Start the stack:  make dev   (or docker compose up)")
 
 

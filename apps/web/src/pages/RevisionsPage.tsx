@@ -4,6 +4,7 @@ import { useOutletContext } from "react-router-dom";
 
 import { AnalysisProgress } from "../components/AnalysisProgress";
 import { ChangeList } from "../components/ChangeList";
+import { ChangeSignals } from "../components/ChangeSignals";
 import { ConfirmationModal } from "../components/ConfirmationModal";
 import { DrawingComparison } from "../components/DrawingComparison";
 import { EvidencePanel } from "../components/EvidencePanel";
@@ -183,8 +184,9 @@ export function RevisionsPage() {
             <div className="flex-1 min-h-0 overflow-hidden">
               <ChangeList changes={changes} selected={selected} onSelect={setSelected} />
             </div>
+            <ChangeSignals change={selectedChange} analysisId={activeId} />
             <div className="panel-title !border-t border-b-0">
-              affected {selectedChange ? `· via ${selectedChange.metadata?.semantic ?? "change"}` : ""}
+              affected {selectedChange ? `· via ${String(selectedChange.metadata?.semantic ?? "change")}` : ""}
             </div>
             <div className="max-h-28 overflow-y-auto scroll-thin bg-ink-900">
               {(result.data?.affected_components ?? [])

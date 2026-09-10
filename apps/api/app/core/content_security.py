@@ -19,6 +19,9 @@ _INJECTION_PATTERNS = [
     r"approve\s+(all|every)\s+(changes|findings)\s+without",
     r"set\s+severity\s+of\s+all",
     r"override\s+(the\s+)?(reviewer|human|safety)",
+    r"approve\s+(this|the|all|every)\s+(drawing|change|revision|finding|document)",
+    r"(auto|matically)?\s*approve\s+without\s+(review|check)",
+    r"(drawings?|documents?)\s+(are|is)\s+pre-approved",
 ]
 _COMPILED = [re.compile(p, re.IGNORECASE) for p in _INJECTION_PATTERNS]
 

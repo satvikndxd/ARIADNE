@@ -124,3 +124,57 @@ def list_findings(session: Session, project_id: str | None = None, status: str |
     if component_id:
         stmt = stmt.where(Finding.component_id == component_id)
     return list(session.scalars(stmt).all())
+
+
+def build_evidence_chain(session: Session, f: Finding) -> list[dict]:
+    """Explicit trace: change → component → dependency → requirement →
+    evidence → deterministic check → explanation → human review."""
+    from app.db.models import AnalysisRun, Component, Requirement
+    from app.services.graph import get_graph_store
+
+    chain: list[dict] = []
+    run = session.get(AnalysisRun, f.analysis_run_id) if f.analysis_run_id else None
+    result = (run.result_json or {}) if run else {}
+    changes = [c for c in result.get("changes", [])
+               if c.get("component_id") == f.component_id and c.get("classification") == "consequential"]
+    for c in changes[:4]:
+        chain.append({"type": "change", "id": c.get("id"), "label": c.get("title"),
+                      "detail": f"{c.get('change_type')} · {c.get('detection_method')} · "
+                                f"consensus {(c.get('metadata') or {}).get('signals', {}).get('status', 'n/a')}"})
+    comp = session.get(Component, f.component_id) if f.component_id else None
+    if comp:
+        chain.append({"type": "component", "id": comp.id, "label": comp.name,
+                      "detail": f"{comp.subsystem or comp.type} · {comp.material or 'n/a'}"})
+    if comp:
+        view = get_graph_store().graph_view(session, comp.id, 2)
+        deps = [f"{n.label} ({n.direction}, {n.depth} hop)" for n in view.nodes if n.direction != "root"]
+        chain.append({"type": "dependency", "id": comp.id, "label": "dependency neighbourhood",
+                      "detail": "; ".join(deps[:6]) or "isolated",
+                      "link": f"/components/{comp.id}"})
+    codes = {e.get("requirement_code") for e in result.get("deterministic_checks", [])}
+    reqs = [r for r in session.query(Requirement).all()
+            if r.code in codes and comp and comp.id in (r.applies_to_json or [])]
+    for r in reqs[:4]:
+        chk = next((c for c in result.get("deterministic_checks", []) if c["requirement_code"] == r.code), None)
+        chain.append({"type": "requirement", "id": r.id, "label": r.code,
+                      "detail": f"§{r.section} p.{r.page} · deterministic check: "
+                                f"{chk['result'] if chk else 'n/a'}"})
+    for e in f.evidence[:5]:
+        chain.append({"type": "evidence", "id": e.id,
+                      "label": e.document_id or e.evidence_type,
+                      "detail": f"{e.evidence_type} · §{e.section or '—'} p.{e.page or '—'} · "
+                                f"{(e.excerpt or '')[:80]}"})
+    for c in result.get("deterministic_checks", []):
+        if c["result"] in ("fail", "flag"):
+            chain.append({"type": "check", "id": c["requirement_code"], "label": c["requirement_code"],
+                          "detail": f"{c['rule']} → {c['result'].upper()} · inputs {c['inputs']} · "
+                                    f"margin {c['margin']}{c['unit']}"})
+    insight = result.get("insight") or {}
+    if insight:
+        chain.append({"type": "explanation", "id": run.id if run else None,
+                      "label": f"LLM explanation ({insight.get('mode', 'n/a')})",
+                      "detail": (insight.get("potential_impact") or "")[:200]})
+    chain.append({"type": "review", "id": f.id, "label": f"human review: {f.status}",
+                  "detail": f"created by {f.created_by} · reviewed by {f.reviewed_by or '—'} · "
+                            f"source {f.source}"})
+    return chain

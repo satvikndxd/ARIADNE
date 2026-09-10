@@ -311,6 +311,31 @@ def ingest_document(session: Session, slug: str, project_id: str | None) -> dict
     }
 
 
+EMBED_META_PATH = settings.vector_dir / "embed_meta.json"
+
+
+def embedding_meta_current() -> dict:
+    from app.services.rag.embeddings import get_embedding_provider
+
+    prov = get_embedding_provider()
+    return {"provider": prov.name, "dim": int(prov.dim)}
+
+
+def ensure_index_current() -> dict:
+    """Rebuild the vector index when the embedding backend or dim changed."""
+    current = embedding_meta_current()
+    stored = json.loads(EMBED_META_PATH.read_text()) if EMBED_META_PATH.exists() else None
+    if stored == current:
+        return {"action": "up-to-date", **current}
+    from app.db.base import SessionLocal
+
+    with SessionLocal() as session:
+        stats = reindex_all(session)
+        session.commit()
+    EMBED_META_PATH.write_text(json.dumps(current))
+    return {"action": "reindexed", **current, **stats}
+
+
 def reindex_all(session: Session) -> dict:
     """Rebuild the whole vector index from the DocumentChunk rows visible in
     ``session`` (flushed rows included), so ingest → index stays atomic."""

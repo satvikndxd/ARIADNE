@@ -44,6 +44,15 @@ def get_finding(finding_id: str, session: Session = Depends(get_session),
     return svc.to_out(session, f)
 
 
+@router.get("/findings/{finding_id}/chain")
+def finding_chain(finding_id: str, session: Session = Depends(get_session),
+                  principal: Principal = Depends(current_principal)):
+    f = session.get(Finding, finding_id)
+    if f is None:
+        raise NotFoundError(f"Finding '{finding_id}' not found.")
+    return {"finding_id": finding_id, "chain": svc.build_evidence_chain(session, f)}
+
+
 @router.post("/findings", response_model=FindingOut, status_code=201)
 def create_finding(payload: FindingCreate, session: Session = Depends(get_session),
                    principal: Principal = Depends(current_principal)):

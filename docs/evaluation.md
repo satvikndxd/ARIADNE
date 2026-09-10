@@ -42,3 +42,50 @@ make eval            # or POST /evaluation/run
 GET /evaluation/runs # persisted runs + metrics + report path
 ```
 Reports land in `data/reports/evaluation_<run>.json`.
+
+
+## Suites and commands (added in the research-hardening pass)
+
+| command | suite | what it measures |
+|---|---|---|
+| `make eval` | full | change detection (pairs), retrieval (production strategies), agent, grounding, latency |
+| `make eval-blind` | blind | CV-only vs CV+VLM on the blind benchmark + failure analysis |
+| `make eval-rag` | rag | baselines A keyword / B lexical-vector / C semantic-vector / D revision-aware-lexical / E revision-aware-semantic / +graph arm |
+| `make eval-vlm` | vlm | VLM arm + consensus distribution (labels `not_run_no_vlm_endpoint` without an endpoint) |
+
+Reports: `data/evaluation/results/<suite>_<run>.json` plus `evaluation_runs`
+and `evaluation_metrics` rows (subset/metric/value/n/detail).
+
+## Measured results (sandbox run, lexical vs real semantic embedder)
+
+Retrieval, 12 qrels, semantic backend = `sentence-transformers:all-MiniLM-L6-v2`
+(the configured default for deployments is `BAAI/bge-m3`; the sandbox RAM
+budget forbids it — backend names in reports always reflect the model actually
+loaded):
+
+| strategy | Recall@5 | MRR | nDCG@5 |
+|---|---|---|---|
+| A keyword (BM25) | 0.917 | 0.819 | 0.827 |
+| B lexical vector (hashing) | 0.917 | 0.875 | 0.858 |
+| C semantic vector (MiniLM) | 0.917 | **0.917** | **0.895** |
+| D revision-aware (lexical) | 0.917 | 0.833 | 0.837 |
+| E revision-aware + semantic | 0.917 | **0.917** | **0.898** |
+| E+graph arm | 0.917 | 0.917 | 0.898 |
+
+Blind benchmark, 24 cases, CV-only arm (VLM arm not run — no endpoint):
+
+| view | precision | recall | F1 |
+|---|---|---|---|
+| all ground truth | 0.844 | 1.000 | 0.915 |
+| engineering changes only | 0.438 | 1.000 | 0.609 |
+
+Top failure categories: `spurious_detection` (20, concentrated in the noise
+trap cases), `localization_weak` (0 after gt-completeness fix),
+`irrelevant_noise_fp` (noise traps). The engineering-only precision penalty is
+the honest cost of metadata/geometry detections under a strict view; the
+all-gt view is the primary number.
+
+**Interpretation discipline:** semantic embeddings improve MRR/nDCG (ranking
+quality) at equal recall on this small qrel set; we do **not** claim a recall
+improvement. The VLM is **not** claimed to improve accuracy — no endpoint was
+available to measure it.
