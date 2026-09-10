@@ -291,6 +291,9 @@ study.
   environments (recorded as `in-process-fallback`); the MCP server itself is
   verified by `scripts/mcp_probe.py`.
 * Single-node prototype: no clustering, no HNSW, no Kubernetes — deliberately.
+* Headless Chromium in memory-constrained sandboxes can fail with
+  `V8 process OOM (Failed to reserve virtual memory for CodeRange)`; launch with
+  `--js-flags=--jitless` there (the Playwright config and CI are unaffected).
 
 ## License
 
